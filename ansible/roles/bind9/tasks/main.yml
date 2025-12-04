@@ -39,10 +39,11 @@
 
 - name: Check if zone entry already exists
   ansible.builtin.shell: |
-    grep -q "{{ app_config.dns.records[0].name }}" {{ bind9_zone_file }} && echo "exists" || echo "not_exists"
+    grep -q "{{ (app_config.dns.records | first).name | default('NOTFOUND') }}" {{ bind9_zone_file }} && echo "exists" || echo "not_exists"
   register: zone_entry_check
   changed_when: false
   failed_when: false
+  when: app_config.dns.records | length > 0
 
 - name: Backup current zone file
   ansible.builtin.copy:

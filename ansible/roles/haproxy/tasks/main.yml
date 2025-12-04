@@ -34,8 +34,14 @@
     owner: root
     group: root
     mode: '0644'
-    validate: 'haproxy -c -f %s'
   notify: Reload HAProxy
+  register: haproxy_config_result
+
+- name: Validate generated HAProxy configuration
+  ansible.builtin.command:
+    cmd: haproxy -c -f {{ haproxy_conf_d_dir }}/{{ app_name }}.cfg
+  changed_when: false
+  when: haproxy_config_result.changed
 
 - name: Check if include directive exists in main config
   ansible.builtin.shell: |

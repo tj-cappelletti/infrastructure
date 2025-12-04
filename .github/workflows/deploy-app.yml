@@ -166,15 +166,16 @@ jobs:
 
       - name: Install Ansible
         run: |
-          pip install ansible
+          pip install ansible pyyaml
 
       - name: Deploy DNS records
         run: |
+          APP_CONFIG=$(python scripts/yaml-to-json.py applications/${{ matrix.app }}.yml)
           cd ansible
           ansible-playbook \
             -i inventory/hosts.yml \
             playbooks/deploy-dns.yml \
-            -e "app_config=$(cat ../applications/${{ matrix.app }}.yml | python -c 'import sys, yaml, json; print(json.dumps(yaml.safe_load(sys.stdin)))')" \
+            -e "app_config=${APP_CONFIG}" \
             -e "app_name=${{ matrix.app }}"
         env:
           ANSIBLE_PRIVATE_KEY_FILE: ${{ secrets.ANSIBLE_SSH_KEY }}
@@ -204,15 +205,16 @@ jobs:
 
       - name: Install Ansible
         run: |
-          pip install ansible
+          pip install ansible pyyaml
 
       - name: Deploy HAProxy configuration
         run: |
+          APP_CONFIG=$(python scripts/yaml-to-json.py applications/${{ matrix.app }}.yml)
           cd ansible
           ansible-playbook \
             -i inventory/hosts.yml \
             playbooks/deploy-haproxy.yml \
-            -e "app_config=$(cat ../applications/${{ matrix.app }}.yml | python -c 'import sys, yaml, json; print(json.dumps(yaml.safe_load(sys.stdin)))')" \
+            -e "app_config=${APP_CONFIG}" \
             -e "app_name=${{ matrix.app }}"
         env:
           ANSIBLE_PRIVATE_KEY_FILE: ${{ secrets.ANSIBLE_SSH_KEY }}

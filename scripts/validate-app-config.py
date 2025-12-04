@@ -19,12 +19,24 @@ import yaml
 
 
 def validate_ip_address(ip: str) -> bool:
-    """Validate an IPv4 address format."""
-    pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
-    if not re.match(pattern, ip):
+    """Validate an IPv4 address format and range."""
+    # Split first to check structure
+    parts = ip.split('.')
+    if len(parts) != 4:
         return False
-    octets = ip.split('.')
-    return all(0 <= int(octet) <= 255 for octet in octets)
+    
+    for part in parts:
+        # Check each part is a valid integer in range
+        if not part.isdigit():
+            return False
+        octet = int(part)
+        if octet < 0 or octet > 255:
+            return False
+        # Check for leading zeros (e.g., "01" is invalid)
+        if len(part) > 1 and part[0] == '0':
+            return False
+    
+    return True
 
 
 def validate_dns_name(name: str) -> bool:

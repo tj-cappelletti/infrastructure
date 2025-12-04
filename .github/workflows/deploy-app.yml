@@ -35,6 +35,10 @@ env:
   ANSIBLE_HOST_KEY_CHECKING: 'false'
   ANSIBLE_FORCE_COLOR: 'true'
 
+# Limit permissions for security
+permissions:
+  contents: read
+
 jobs:
   # Job 1: Detect which applications have changed
   detect-changes:

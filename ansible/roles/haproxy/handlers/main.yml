@@ -1,0 +1,15 @@
+---
+# HAProxy Role - Handlers
+# These handlers are triggered by tasks that modify HAProxy configuration
+
+- name: Reload HAProxy
+  ansible.builtin.service:
+    name: haproxy
+    state: reloaded
+  become: true
+
+- name: Restart HAProxy
+  ansible.builtin.service:
+    name: haproxy
+    state: restarted
+  become: true

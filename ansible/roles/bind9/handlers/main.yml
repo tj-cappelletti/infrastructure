@@ -1,0 +1,15 @@
+---
+# Bind9 DNS Role - Handlers
+# These handlers are triggered by tasks that modify DNS configuration
+
+- name: Reload Bind9
+  ansible.builtin.service:
+    name: named
+    state: reloaded
+  become: true
+
+- name: Restart Bind9
+  ansible.builtin.service:
+    name: named
+    state: restarted
+  become: true

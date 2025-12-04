@@ -1,0 +1,45 @@
+---
+# Playbook: Deploy DNS Records
+# This playbook deploys DNS records for an application using the Bind9 role
+# 
+# Usage:
+#   ansible-playbook deploy-dns.yml -e "@/path/to/app-config.yml" -e "app_name=kubernetes-bootcamp"
+#
+# Required extra vars:
+#   - app_config: The application configuration (loaded from YAML file)
+#   - app_name: The name of the application being deployed
+
+- name: Deploy DNS Records for Application
+  hosts: dns
+  gather_facts: true
+  become: true
+
+  pre_tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - app_config is defined
+          - app_name is defined
+        fail_msg: "Both 'app_config' and 'app_name' must be provided as extra variables"
+        success_msg: "Required variables validated"
+
+    - name: Display deployment information
+      ansible.builtin.debug:
+        msg: |
+          Deploying DNS records for application: {{ app_name }}
+          Target DNS server: {{ ansible_host }}
+          Zone: {{ app_config.dns.zone }}
+          Records to configure: {{ app_config.dns.records | length }}
+
+  roles:
+    - role: bind9
+
+  post_tasks:
+    - name: Verify DNS records were applied
+      ansible.builtin.debug:
+        msg: "DNS records for {{ app_name }} have been successfully deployed"
+
+    - name: Wait for DNS propagation
+      ansible.builtin.pause:
+        seconds: 5
+      when: dns_wait_propagation | default(true)

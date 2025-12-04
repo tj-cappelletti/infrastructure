@@ -1,0 +1,87 @@
+# Application Configuration: Kubernetes Bootcamp
+# This file defines the complete deployment configuration for the kubernetes-bootcamp application
+# across DNS, HAProxy, and Kubernetes infrastructure components.
+
+metadata:
+  name: kubernetes-bootcamp
+  environment: production
+  owner: platform-team
+  description: Google Kubernetes Bootcamp sample application
+
+# DNS Configuration
+# Manages Bind9 DNS records for the application
+dns:
+  provider: bind9
+  zone: webstorm.cloud
+  server: 172.16.0.11
+  records:
+    - type: A
+      name: bootcamp
+      value: 172.16.0.60
+      ttl: 300
+
+# HAProxy Configuration
+# Manages load balancer routing for the application
+haproxy:
+  host: 172.16.0.60
+  frontend:
+    name: kubernetes-bootcamp-frontend
+    bind_port: 80
+    mode: http
+    acl:
+      name: host_bootcamp
+      match: "hdr(host) -i bootcamp.webstorm.cloud"
+  backend:
+    name: kubernetes-bootcamp-backend
+    mode: http
+    balance: roundrobin
+    servers:
+      - name: k3s-worker-1
+        address: 172.16.0.21
+        port: 80
+        options: check
+      - name: k3s-worker-2
+        address: 172.16.0.22
+        port: 80
+        options: check
+    health_check:
+      enabled: true
+      path: /
+      interval: 5000
+      timeout: 2000
+
+# Kubernetes Configuration
+# Defines the deployment topology within the K3s cluster
+kubernetes:
+  namespace: kubernetes-bootcamp
+  deployment:
+    name: kubernetes-bootcamp
+    replicas: 3
+    image: gcr.io/google-samples/kubernetes-bootcamp:v1
+    resources:
+      requests:
+        memory: 128Mi
+        cpu: 100m
+      limits:
+        memory: 256Mi
+        cpu: 200m
+    labels:
+      app: kubernetes-bootcamp
+      tier: frontend
+  service:
+    name: kubernetes-bootcamp
+    type: ClusterIP
+    port: 8080
+    targetPort: 8080
+  ingress:
+    name: kubernetes-bootcamp-ingress
+    className: traefik
+    host: bootcamp.webstorm.cloud
+    path: /
+    pathType: Prefix
+
+# Monitoring and Observability
+monitoring:
+  enabled: true
+  prometheus_scrape: true
+  metrics_port: 8080

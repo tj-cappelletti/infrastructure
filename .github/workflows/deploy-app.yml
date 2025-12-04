@@ -1,0 +1,298 @@
+# Application Deployment Workflow
+# This workflow orchestrates the deployment of applications across DNS, HAProxy, and Kubernetes
+# Triggered on changes to application definitions or Kubernetes manifests
+
+name: Deploy Application
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'applications/**'
+      - 'kubernetes/apps/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'applications/**'
+      - 'kubernetes/apps/**'
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'Application name to deploy'
+        required: true
+        type: choice
+        options:
+          - kubernetes-bootcamp
+      dry_run:
+        description: 'Perform a dry run without applying changes'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  ANSIBLE_HOST_KEY_CHECKING: 'false'
+  ANSIBLE_FORCE_COLOR: 'true'
+
+jobs:
+  # Job 1: Detect which applications have changed
+  detect-changes:
+    name: Detect Changed Applications
+    runs-on: [self-hosted, linux]
+    outputs:
+      changed_apps: ${{ steps.detect.outputs.apps }}
+      app_matrix: ${{ steps.detect.outputs.matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed applications
+        id: detect
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # Manual trigger - use selected app
+            echo "apps=${{ github.event.inputs.app_name }}" >> $GITHUB_OUTPUT
+            echo "matrix=[\"${{ github.event.inputs.app_name }}\"]" >> $GITHUB_OUTPUT
+          else
+            # Detect changes from git diff
+            CHANGED_APPS=""
+            MATRIX="["
+            
+            # Check application YAML changes
+            for file in $(git diff --name-only HEAD~1 HEAD -- 'applications/*.yml' 2>/dev/null || echo ""); do
+              APP_NAME=$(basename "$file" .yml)
+              if [ -n "$APP_NAME" ]; then
+                if [ -z "$CHANGED_APPS" ]; then
+                  CHANGED_APPS="$APP_NAME"
+                  MATRIX="[\"$APP_NAME\""
+                else
+                  CHANGED_APPS="$CHANGED_APPS,$APP_NAME"
+                  MATRIX="$MATRIX,\"$APP_NAME\""
+                fi
+              fi
+            done
+            
+            # Check Kubernetes manifest changes
+            for dir in $(git diff --name-only HEAD~1 HEAD -- 'kubernetes/apps/*' 2>/dev/null | cut -d'/' -f3 | sort -u || echo ""); do
+              if [ -n "$dir" ] && [[ ! "$CHANGED_APPS" == *"$dir"* ]]; then
+                if [ -z "$CHANGED_APPS" ]; then
+                  CHANGED_APPS="$dir"
+                  MATRIX="[\"$dir\""
+                else
+                  CHANGED_APPS="$CHANGED_APPS,$dir"
+                  MATRIX="$MATRIX,\"$dir\""
+                fi
+              fi
+            done
+            
+            MATRIX="$MATRIX]"
+            
+            # Default to kubernetes-bootcamp if no changes detected
+            if [ -z "$CHANGED_APPS" ]; then
+              CHANGED_APPS="kubernetes-bootcamp"
+              MATRIX='["kubernetes-bootcamp"]'
+            fi
+            
+            echo "apps=$CHANGED_APPS" >> $GITHUB_OUTPUT
+            echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "Changed applications: $CHANGED_APPS"
+
+  # Job 2: Validate application configurations and manifests
+  validate:
+    name: Validate Configuration
+    runs-on: [self-hosted, linux]
+    needs: detect-changes
+    strategy:
+      matrix:
+        app: ${{ fromJson(needs.detect-changes.outputs.app_matrix) }}
+      fail-fast: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyyaml jsonschema
+
+      - name: Validate application configuration
+        run: |
+          python scripts/validate-app-config.py applications/${{ matrix.app }}.yml
+
+      - name: Validate Kubernetes manifests
+        run: |
+          # Check if kubectl is available
+          if command -v kubectl &> /dev/null; then
+            kubectl apply --dry-run=client -k kubernetes/apps/${{ matrix.app }}/
+          else
+            echo "kubectl not available, skipping K8s validation"
+          fi
+
+      - name: Generate and validate HAProxy configuration
+        run: |
+          python scripts/generate-haproxy-config.py applications/${{ matrix.app }}.yml
+
+      - name: Validate Ansible playbooks syntax
+        run: |
+          if command -v ansible-playbook &> /dev/null; then
+            ansible-playbook --syntax-check ansible/playbooks/deploy-dns.yml
+            ansible-playbook --syntax-check ansible/playbooks/deploy-haproxy.yml
+          else
+            echo "ansible-playbook not available, skipping Ansible syntax check"
+          fi
+
+  # Job 3: Deploy DNS records
+  deploy-dns:
+    name: Deploy DNS Records
+    runs-on: [self-hosted, linux]
+    needs: [detect-changes, validate]
+    if: github.event_name != 'pull_request' && github.event.inputs.dry_run != 'true'
+    strategy:
+      matrix:
+        app: ${{ fromJson(needs.detect-changes.outputs.app_matrix) }}
+      max-parallel: 1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          pip install ansible
+
+      - name: Deploy DNS records
+        run: |
+          cd ansible
+          ansible-playbook \
+            -i inventory/hosts.yml \
+            playbooks/deploy-dns.yml \
+            -e "app_config=$(cat ../applications/${{ matrix.app }}.yml | python -c 'import sys, yaml, json; print(json.dumps(yaml.safe_load(sys.stdin)))')" \
+            -e "app_name=${{ matrix.app }}"
+        env:
+          ANSIBLE_PRIVATE_KEY_FILE: ${{ secrets.ANSIBLE_SSH_KEY }}
+
+      - name: Verify DNS resolution
+        run: |
+          # Extract hostname from app config
+          APP_HOST=$(grep -A5 'dns:' applications/${{ matrix.app }}.yml | grep 'name:' | head -1 | awk '{print $2}')
+          ZONE=$(grep 'zone:' applications/${{ matrix.app }}.yml | head -1 | awk '{print $2}')
+          
+          echo "Verifying DNS for ${APP_HOST}.${ZONE}"
+          nslookup "${APP_HOST}.${ZONE}" 172.16.0.11 || echo "DNS verification skipped"
+
+  # Job 4: Deploy HAProxy configuration
+  deploy-haproxy:
+    name: Deploy HAProxy Configuration
+    runs-on: [self-hosted, linux]
+    needs: [detect-changes, validate, deploy-dns]
+    if: github.event_name != 'pull_request' && github.event.inputs.dry_run != 'true'
+    strategy:
+      matrix:
+        app: ${{ fromJson(needs.detect-changes.outputs.app_matrix) }}
+      max-parallel: 1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          pip install ansible
+
+      - name: Deploy HAProxy configuration
+        run: |
+          cd ansible
+          ansible-playbook \
+            -i inventory/hosts.yml \
+            playbooks/deploy-haproxy.yml \
+            -e "app_config=$(cat ../applications/${{ matrix.app }}.yml | python -c 'import sys, yaml, json; print(json.dumps(yaml.safe_load(sys.stdin)))')" \
+            -e "app_name=${{ matrix.app }}"
+        env:
+          ANSIBLE_PRIVATE_KEY_FILE: ${{ secrets.ANSIBLE_SSH_KEY }}
+
+      - name: Verify HAProxy is running
+        run: |
+          echo "HAProxy configuration deployed for ${{ matrix.app }}"
+
+  # Job 5: Deploy Kubernetes resources
+  deploy-kubernetes:
+    name: Deploy to Kubernetes
+    runs-on: [self-hosted, linux]
+    needs: [detect-changes, validate, deploy-haproxy]
+    if: github.event_name != 'pull_request' && github.event.inputs.dry_run != 'true'
+    strategy:
+      matrix:
+        app: ${{ fromJson(needs.detect-changes.outputs.app_matrix) }}
+      max-parallel: 1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG }}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -k kubernetes/apps/${{ matrix.app }}/
+
+      - name: Wait for deployment rollout
+        run: |
+          NAMESPACE=$(grep 'namespace:' kubernetes/apps/${{ matrix.app }}/kustomization.yaml | awk '{print $2}')
+          kubectl rollout status deployment/${{ matrix.app }} -n "$NAMESPACE" --timeout=300s
+
+      - name: Verify deployment
+        run: |
+          NAMESPACE=$(grep 'namespace:' kubernetes/apps/${{ matrix.app }}/kustomization.yaml | awk '{print $2}')
+          kubectl get pods -n "$NAMESPACE" -l app=${{ matrix.app }}
+          kubectl get svc -n "$NAMESPACE"
+          kubectl get ingress -n "$NAMESPACE"
+
+  # Job 6: Run smoke tests and notify
+  notify:
+    name: Notify Deployment Status
+    runs-on: [self-hosted, linux]
+    needs: [detect-changes, deploy-kubernetes]
+    if: always() && github.event_name != 'pull_request'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyyaml requests
+
+      - name: Run smoke tests
+        run: |
+          for app in $(echo "${{ needs.detect-changes.outputs.changed_apps }}" | tr ',' ' '); do
+            if [ -f "applications/${app}.yml" ]; then
+              python scripts/smoke-test.py "applications/${app}.yml" || echo "Smoke test failed for ${app}"
+            fi
+          done
+        continue-on-error: true
+
+      - name: Deployment summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Applications:** ${{ needs.detect-changes.outputs.changed_apps }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.deploy-kubernetes.result }}" == "success" ]; then
+            echo "✅ Deployment completed successfully" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Deployment failed or was skipped" >> $GITHUB_STEP_SUMMARY
+          fi

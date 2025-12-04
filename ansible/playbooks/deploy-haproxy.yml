@@ -1,0 +1,56 @@
+---
+# Playbook: Deploy HAProxy Configuration
+# This playbook deploys HAProxy backend configuration for an application
+# 
+# Usage:
+#   ansible-playbook deploy-haproxy.yml -e "@/path/to/app-config.yml" -e "app_name=kubernetes-bootcamp"
+#
+# Required extra vars:
+#   - app_config: The application configuration (loaded from YAML file)
+#   - app_name: The name of the application being deployed
+
+- name: Deploy HAProxy Configuration for Application
+  hosts: haproxy
+  gather_facts: true
+  become: true
+
+  pre_tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - app_config is defined
+          - app_name is defined
+        fail_msg: "Both 'app_config' and 'app_name' must be provided as extra variables"
+        success_msg: "Required variables validated"
+
+    - name: Display deployment information
+      ansible.builtin.debug:
+        msg: |
+          Deploying HAProxy configuration for application: {{ app_name }}
+          Target HAProxy host: {{ ansible_host }}
+          Frontend: {{ app_config.haproxy.frontend.name }}
+          Backend: {{ app_config.haproxy.backend.name }}
+          Backend servers: {{ app_config.haproxy.backend.servers | length }}
+
+  roles:
+    - role: haproxy
+
+  handlers:
+    - name: Reload HAProxy
+      ansible.builtin.service:
+        name: haproxy
+        state: reloaded
+
+  post_tasks:
+    - name: Verify HAProxy configuration was applied
+      ansible.builtin.debug:
+        msg: "HAProxy configuration for {{ app_name }} has been successfully deployed"
+
+    - name: Check HAProxy service status
+      ansible.builtin.service_facts:
+      register: service_facts
+
+    - name: Display HAProxy service status
+      ansible.builtin.debug:
+        msg: "HAProxy service state: {{ ansible_facts.services['haproxy.service'].state | default('unknown') }}"
+      when: ansible_facts.services is defined

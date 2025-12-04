@@ -1,0 +1,9 @@
+---
+# Kubernetes Namespace for kubernetes-bootcamp application
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubernetes-bootcamp
+  labels:
+    app.kubernetes.io/name: kubernetes-bootcamp
+    app.kubernetes.io/managed-by: infrastructure-monorepo

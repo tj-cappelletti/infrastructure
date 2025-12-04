@@ -1,0 +1,21 @@
+# Kustomization for kubernetes-bootcamp application
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Set namespace for all resources
+namespace: kubernetes-bootcamp
+
+# Labels applied to all resources
+labels:
+  - pairs:
+      app.kubernetes.io/name: kubernetes-bootcamp
+      app.kubernetes.io/part-of: infrastructure-monorepo
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
+
+# Resources to include
+resources:
+  - namespace.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml

@@ -1,0 +1,96 @@
+---
+# Bind9 DNS Role - Main Tasks
+# This role manages DNS A records for applications in the Bind9 DNS server
+
+- name: Validate application configuration is provided
+  ansible.builtin.assert:
+    that:
+      - app_config is defined
+      - app_config.dns is defined
+      - app_config.dns.records is defined
+    fail_msg: "Application configuration with DNS records must be provided"
+    success_msg: "Application configuration validated successfully"
+
+- name: Validate DNS record structure
+  ansible.builtin.assert:
+    that:
+      - item.type is defined
+      - item.name is defined
+      - item.value is defined
+    fail_msg: "Each DNS record must have type, name, and value defined"
+  loop: "{{ app_config.dns.records }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Generate zone file entry from template
+  ansible.builtin.template:
+    src: zone-entry.j2
+    dest: "/tmp/{{ app_name }}-zone-entry.txt"
+    mode: '0644'
+  delegate_to: localhost
+  become: false
+
+- name: Read generated zone entry
+  ansible.builtin.slurp:
+    src: "/tmp/{{ app_name }}-zone-entry.txt"
+  register: zone_entry_content
+  delegate_to: localhost
+  become: false
+
+- name: Check if zone entry already exists
+  ansible.builtin.shell: |
+    grep -q "{{ (app_config.dns.records | first).name | default('NOTFOUND') }}" {{ bind9_zone_file }} && echo "exists" || echo "not_exists"
+  register: zone_entry_check
+  changed_when: false
+  failed_when: false
+  when: app_config.dns.records | length > 0
+
+- name: Backup current zone file
+  ansible.builtin.copy:
+    src: "{{ bind9_zone_file }}"
+    dest: "{{ bind9_zone_file }}.backup.{{ ansible_date_time.epoch }}"
+    remote_src: true
+    mode: '0644'
+  when: zone_entry_check.stdout == "not_exists"
+
+- name: Append zone entry to zone file
+  ansible.builtin.blockinfile:
+    path: "{{ bind9_zone_file }}"
+    block: "{{ zone_entry_content.content | b64decode }}"
+    marker: "; {mark} ANSIBLE MANAGED BLOCK - {{ app_name }}"
+    insertafter: EOF
+  when: zone_entry_check.stdout == "not_exists"
+  notify: Reload Bind9
+
+- name: Update existing zone entry
+  ansible.builtin.blockinfile:
+    path: "{{ bind9_zone_file }}"
+    block: "{{ zone_entry_content.content | b64decode }}"
+    marker: "; {mark} ANSIBLE MANAGED BLOCK - {{ app_name }}"
+  when: zone_entry_check.stdout == "exists"
+  notify: Reload Bind9
+
+- name: Increment zone serial number
+  ansible.builtin.shell: |
+    CURRENT_SERIAL=$(grep -E "^\s*[0-9]{10}" {{ bind9_zone_file }} | head -1 | awk '{print $1}')
+    NEW_SERIAL=$((CURRENT_SERIAL + 1))
+    sed -i "s/$CURRENT_SERIAL/$NEW_SERIAL/" {{ bind9_zone_file }}
+  changed_when: true
+  notify: Reload Bind9
+
+- name: Validate zone file syntax
+  ansible.builtin.command: named-checkzone {{ app_config.dns.zone }} {{ bind9_zone_file }}
+  register: zone_check
+  changed_when: false
+  failed_when: zone_check.rc != 0
+
+- name: Display zone validation result
+  ansible.builtin.debug:
+    msg: "Zone file validation: {{ zone_check.stdout }}"
+
+- name: Clean up temporary files
+  ansible.builtin.file:
+    path: "/tmp/{{ app_name }}-zone-entry.txt"
+    state: absent
+  delegate_to: localhost
+  become: false

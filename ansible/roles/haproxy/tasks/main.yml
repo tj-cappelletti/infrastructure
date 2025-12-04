@@ -1,0 +1,76 @@
+---
+# HAProxy Role - Main Tasks
+# This role manages HAProxy backend configuration for applications
+
+- name: Validate application configuration is provided
+  ansible.builtin.assert:
+    that:
+      - app_config is defined
+      - app_config.haproxy is defined
+      - app_config.haproxy.frontend is defined
+      - app_config.haproxy.backend is defined
+    fail_msg: "Application configuration with HAProxy settings must be provided"
+    success_msg: "Application configuration validated successfully"
+
+- name: Validate HAProxy backend servers
+  ansible.builtin.assert:
+    that:
+      - app_config.haproxy.backend.servers | length > 0
+    fail_msg: "At least one backend server must be defined"
+    success_msg: "Backend servers validated successfully"
+
+- name: Ensure HAProxy conf.d directory exists
+  ansible.builtin.file:
+    path: "{{ haproxy_conf_d_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Generate HAProxy backend configuration
+  ansible.builtin.template:
+    src: backend.cfg.j2
+    dest: "{{ haproxy_conf_d_dir }}/{{ app_name }}.cfg"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload HAProxy
+  register: haproxy_config_result
+
+- name: Validate generated HAProxy configuration
+  ansible.builtin.command:
+    cmd: haproxy -c -f {{ haproxy_conf_d_dir }}/{{ app_name }}.cfg
+  changed_when: false
+  when: haproxy_config_result.changed
+
+- name: Check if include directive exists in main config
+  ansible.builtin.shell: |
+    grep -q "{{ haproxy_conf_d_dir }}" {{ haproxy_config_file }} && echo "exists" || echo "not_exists"
+  register: include_check
+  changed_when: false
+  failed_when: false
+
+- name: Backup main HAProxy configuration
+  ansible.builtin.copy:
+    src: "{{ haproxy_config_file }}"
+    dest: "{{ haproxy_config_file }}.backup.{{ ansible_date_time.epoch }}"
+    remote_src: true
+    mode: '0644'
+  when: include_check.stdout == "not_exists"
+
+- name: Add include directive for conf.d to main config
+  ansible.builtin.lineinfile:
+    path: "{{ haproxy_config_file }}"
+    line: "# Include per-application configurations"
+    insertafter: EOF
+  when: include_check.stdout == "not_exists"
+
+- name: Validate complete HAProxy configuration
+  ansible.builtin.command: haproxy -c -f {{ haproxy_config_file }}
+  register: haproxy_check
+  changed_when: false
+  failed_when: haproxy_check.rc != 0
+
+- name: Display HAProxy validation result
+  ansible.builtin.debug:
+    msg: "HAProxy configuration validation: {{ haproxy_check.stdout }}"
